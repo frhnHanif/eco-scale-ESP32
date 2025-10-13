@@ -67,7 +67,7 @@ ezButton tombol[] = {
 // ==================== GLOBAL VARIABLES ====================
 AppState currentState = AppState::IDLE;
 SampahType sampah;
-char fakultas[8] = "FKM";
+char fakultas[8] = "FIB";
 bool isOnline = false;
 
 // Weight management
