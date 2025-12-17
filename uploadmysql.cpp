@@ -264,62 +264,76 @@ void connectMQTT() {
 bool sendToLaravel() {
   if (WiFi.status() != WL_CONNECTED) return false;
 
-  // 1. Siapkan Data
-  char jenisLengkap[20];
-  if (strcmp(sampah.jenis, "Anorganik") == 0 && strcmp(sampah.subJenis, "--") != 0) {
-    if (strcmp(sampah.subJenis, "Umum") == 0) safeStringCopy(jenisLengkap, "Anorganik", sizeof(jenisLengkap));
-    else safeStringCopy(jenisLengkap, sampah.subJenis, sizeof(jenisLengkap));
-  } else {
-    safeStringCopy(jenisLengkap, sampah.jenis, sizeof(jenisLengkap));
-  }
+  // 1. Siapkan Client Secure
+  WiFiClientSecure clientSecure;
+  clientSecure.setInsecure();          // Abaikan sertifikat
+  clientSecure.setTimeout(15);         // Perpanjang timeout koneksi TCP ke 15 detik (bukan ms)
 
-  // 2. Setup HTTP
   HTTPClient http;
+  
+  // Debug
   Serial.println("\n--- 📦 LARAVEL POST ---");
   
-  // Gunakan wifiClient global
-  if (!http.begin(wifiClient, serverName)) {
-    Serial.println("❌ http.begin() failed!");
+  // 2. Mulai Koneksi dengan Timeout Ekstra
+  if (!http.begin(clientSecure, serverName)) {
+    Serial.println("❌ Gagal inisialisasi HTTP!");
     return false;
   }
+  
+  // Set timeout level HTTP juga
+  http.setTimeout(15000); 
 
-  http.setTimeout(10000); 
+  // 3. Tambahkan Header Penting
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-  http.addHeader("Connection", "close");
+  http.addHeader("Connection", "close"); // PENTING: Minta server langsung tutup koneksi setelah reply
 
-  // 3. Buat Payload
+  // 4. Siapkan Data (Jenis Lengkap)
+  String jenisFinal;
+  if (strcmp(sampah.jenis, "Anorganik") == 0 && strcmp(sampah.subJenis, "--") != 0) {
+    if (strcmp(sampah.subJenis, "Umum") == 0) jenisFinal = "Anorganik";
+    else jenisFinal = String(sampah.subJenis);
+  } else {
+    jenisFinal = String(sampah.jenis);
+  }
+
+  // 5. Buat Payload
   String postData = "api_key=" + String(API_KEY) +
                     "&berat=" + String(currentWeight, 2) +
                     "&fakultas=" + String(fakultas) +
-                    "&jenis=" + String(jenisLengkap);
+                    "&jenis=" + jenisFinal;
 
   Serial.println("Data: " + postData);
   
-  // 4. Kirim
+  // 6. Kirim (POST)
   int httpResponseCode = http.POST(postData);
-  Serial.print("HTTP Code: "); Serial.println(httpResponseCode);
-
+  
   bool success = false;
 
-  // Logika "Optimis" dari kode baru Anda
   if (httpResponseCode > 0) {
+     Serial.print("HTTP Code: "); Serial.println(httpResponseCode);
      String response = http.getString();
-     if (response.indexOf("berhasil") >= 0 || response.indexOf("success") >= 0 || httpResponseCode == 201) {
+     // Serial.println("Response: " + response); // Uncomment jika ingin lihat pesan server
+
+     // Kode 200/201 atau ada kata "berhasil"
+     if (httpResponseCode == 200 || httpResponseCode == 201 || response.indexOf("berhasil") >= 0) {
         Serial.println("✅ Database OK");
         success = true;
      } else {
-        Serial.println("⚠️ Response unexpected but sent");
-        success = true; 
+        Serial.println("⚠️ Terkirim tapi response aneh (Check Server)");
+        success = true; // Tetap anggap sukses agar UI tidak error
      }
-  } else if (httpResponseCode == -1) {
-     Serial.println("⚠️ Connection refused (Data mungkin terkirim)");
-     success = true; // Tetap anggap sukses sesuai request
   } else {
-     Serial.print("❌ HTTP Error: "); Serial.println(http.errorToString(httpResponseCode));
+     Serial.print("❌ HTTP Error: "); 
+     Serial.print(httpResponseCode);
+     Serial.print(" - ");
+     Serial.println(http.errorToString(httpResponseCode));
      success = false;
   }
   
+  // 7. Bersihkan Resource
   http.end();
+  clientSecure.stop(); // Paksa putus koneksi secure
+  
   return success;
 }
 
