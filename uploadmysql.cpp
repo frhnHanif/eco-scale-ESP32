@@ -1,9 +1,8 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <PubSubClient.h> // TAMBAHAN: Library MQTT
+#include <PubSubClient.h> 
 #include <ezButton.h>
 #include <HX711_ADC.h>
-#include <time.h>
 #include <EEPROM.h>
 #include <ESP32Ping.h>
 #include <esp_task_wdt.h>
@@ -31,11 +30,11 @@ namespace Config {
   constexpr int HX711_SCK    = 4;
 }
 
-// ==================== KONFIGURASI SERVER (LARAVEL & MQTT) ====================
-// URL Laravel (Sesuaikan IP Laptop/Server)
+// ==================== KONFIGURASI SERVER ====================
+// URL Laravel
 const char* serverName = "https://ecoscale.undip.us/api/receive-sampah"; 
 
-// Konfigurasi MQTT (Broker Public HiveMQ)
+// Konfigurasi MQTT
 const char* mqtt_server = "broker.hivemq.com";
 const int mqtt_port = 1883;
 const char* mqtt_topic = "undip/scale/new";
@@ -53,8 +52,8 @@ ezButton tombol[] = {
 };
 
 // Network Objects
-WiFiClient wifiClient;            // Client dasar untuk koneksi
-PubSubClient mqttClient(wifiClient); // Client MQTT membungkus WiFiClient
+WiFiClient wifiClient;            
+PubSubClient mqttClient(wifiClient); 
 
 // ==================== GLOBAL VARIABLES ====================
 enum class AppState { IDLE, SELECTING_SUBTYPE, SENDING_DATA, SHOWING_STATUS };
@@ -94,15 +93,14 @@ byte noInternetIcon[] = { B10100, B01000, B10100, B00000, B00000, B00000, B11000
 // ==================== FUNCTION DECLARATIONS ====================
 void prosesTombol();
 void handleKirimData();
-bool sendToLaravel(); // Fungsi Kirim HTTP
-bool sendToMQTT();    // Fungsi Kirim MQTT
+bool sendToLaravel(); // Kirim ke Server (Server handle waktu)
+bool sendToMQTT();    
 float readSmoothedWeight();
 
 void initializeSystem();
 bool connectWiFi();
-void connectMQTT();   // Fungsi Konek MQTT
-bool syncTime();
-bool checkNetworkHealth(); // Cek Ping
+void connectMQTT();   
+bool checkNetworkHealth(); 
 void manageWifiConnection();
 
 void updateWeightDisplay(float weight);
@@ -114,7 +112,7 @@ void safeStringCopy(char* dest, const char* src, size_t destSize);
 // ==================== SETUP ====================
 void setup() {
   Serial.begin(115200);
-  Serial.println("\nStarting Firmware (Laravel + MQTT Hybrid)...");
+  Serial.println("\nStarting Firmware (Robust WiFi Version)...");
   
   esp_task_wdt_init(60, true); 
   esp_task_wdt_add(NULL);
@@ -127,28 +125,21 @@ void setup() {
   offlineMode = false; 
   char statusMsg[16] = "Online Mode";
 
-  do {
-    // 1. Cek WiFi
-    if (!connectWiFi()) {
-      offlineMode = true;
-      safeStringCopy(statusMsg, "WiFi Gagal!", sizeof(statusMsg));
-      break; 
-    }
-
-    // 2. Cek Waktu (NTP)
-    if (!syncTime()) {
-      offlineMode = true;
-      safeStringCopy(statusMsg, "NTP Gagal!", sizeof(statusMsg));
-      break; 
-    }
-
-    // 3. Coba Konek MQTT (Sebagai indikator koneksi bagus)
+  // --- LOGIKA SETUP BARU ---
+  
+  // 1. Cek WiFi
+  if (!connectWiFi()) {
+    offlineMode = true;
+    safeStringCopy(statusMsg, "WiFi Gagal!", sizeof(statusMsg));
+  } else {
+    // Jika WiFi Connected, langsung coba MQTT (Indikator Internet)
     connectMQTT();
     if (!mqttClient.connected()) {
-       Serial.println("Warning: MQTT Gagal saat startup, tapi lanjut dulu...");
+       Serial.println("Warning: MQTT Gagal, tapi lanjut HTTP...");
     }
+  }
 
-  } while (0); 
+  // --- SELESAI SETUP KONEKSI ---
 
   lcd.clear();
   if (offlineMode) {
@@ -176,11 +167,12 @@ void loop() {
   // Input Handling
   for (int i = 0; i < 4; i++) tombol[i].loop();
   
-  // Network & MQTT Maintenance
+  // Network Maintenance
   manageWifiConnection();
+  
+  // MQTT Loop (Hanya jika tidak mode offline total)
   if (!offlineMode) {
       if (!mqttClient.connected()) {
-        // Coba reconnect MQTT sesekali jika putus (jangan blocking)
         static unsigned long lastMqttRetry = 0;
         if (millis() - lastMqttRetry > 5000) {
            connectMQTT();
@@ -228,13 +220,24 @@ void loop() {
 // ==================== NETWORK FUNCTIONS ====================
 
 bool connectWiFi() {
-  WiFi.mode(WIFI_STA); 
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD); // Ambil dari credentials.h
+  // 1. Reset WiFi State: Bersihkan config lama
+  WiFi.disconnect(true);
+  delay(1000); 
+
+  WiFi.mode(WIFI_STA);
+  
+  // 2. Matikan Power Saving: Kunci stabilitas ESP32
+  // Ini sering memperbaiki error DNS/Koneksi yang putus nyambung
+  WiFi.setSleep(false); 
+
+  // 3. Kita gunakan DNS Router bawaan (tanpa paksaan)
+  // tapi dengan koneksi yang bersih.
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD); 
   
   lcd.clear(); lcd.setCursor(0, 1); lcd.print("Connecting WiFi...");
   
   int retry = 0;
-  while (WiFi.status() != WL_CONNECTED && retry < 20) {
+  while (WiFi.status() != WL_CONNECTED && retry < 40) { 
     lcd.setCursor(retry % 20, 2); lcd.print("."); 
     delay(500); retry++; esp_task_wdt_reset();
   }
@@ -242,6 +245,17 @@ bool connectWiFi() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\n✅ WiFi Connected");
     Serial.print("IP: "); Serial.println(WiFi.localIP());
+    // Debug: Cek DNS apa yang dikasih Router
+    Serial.print("DNS: "); Serial.println(WiFi.dnsIP()); 
+    
+    // Tes resolusi DNS sederhana
+    IPAddress testIP;
+    if(WiFi.hostByName("google.com", testIP)) {
+        Serial.println("DNS OK! google.com -> " + testIP.toString());
+    } else {
+        Serial.println("DNS Warning: Gagal resolve google.com (Mungkin butuh DNS statis atau ganti jaringan)");
+    }
+
     return true;
   }
   return false;
@@ -260,34 +274,28 @@ void connectMQTT() {
   }
 }
 
-// --- PENGIRIMAN KE LARAVEL (Menggunakan logika kode baru Anda) ---
+// --- PENGIRIMAN KE LARAVEL (Tanpa Timestamp dari ESP) ---
 bool sendToLaravel() {
   if (WiFi.status() != WL_CONNECTED) return false;
 
-  // 1. Siapkan Client Secure
   WiFiClientSecure clientSecure;
-  clientSecure.setInsecure();          // Abaikan sertifikat
-  clientSecure.setTimeout(15);         // Perpanjang timeout koneksi TCP ke 15 detik (bukan ms)
-
+  clientSecure.setInsecure(); // Wajib jika tidak pakai NTP/Cert validation
+  
   HTTPClient http;
   
-  // Debug
   Serial.println("\n--- 📦 LARAVEL POST ---");
   
-  // 2. Mulai Koneksi dengan Timeout Ekstra
+  // Timeout 15 Detik
   if (!http.begin(clientSecure, serverName)) {
     Serial.println("❌ Gagal inisialisasi HTTP!");
     return false;
   }
   
-  // Set timeout level HTTP juga
   http.setTimeout(15000); 
-
-  // 3. Tambahkan Header Penting
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-  http.addHeader("Connection", "close"); // PENTING: Minta server langsung tutup koneksi setelah reply
+  http.addHeader("Connection", "close"); 
 
-  // 4. Siapkan Data (Jenis Lengkap)
+  // Format Data
   String jenisFinal;
   if (strcmp(sampah.jenis, "Anorganik") == 0 && strcmp(sampah.subJenis, "--") != 0) {
     if (strcmp(sampah.subJenis, "Umum") == 0) jenisFinal = "Anorganik";
@@ -296,7 +304,7 @@ bool sendToLaravel() {
     jenisFinal = String(sampah.jenis);
   }
 
-  // 5. Buat Payload
+  // Payload hanya data timbangan. Server akan handle 'created_at' = NOW()
   String postData = "api_key=" + String(API_KEY) +
                     "&berat=" + String(currentWeight, 2) +
                     "&fakultas=" + String(fakultas) +
@@ -304,23 +312,18 @@ bool sendToLaravel() {
 
   Serial.println("Data: " + postData);
   
-  // 6. Kirim (POST)
   int httpResponseCode = http.POST(postData);
-  
   bool success = false;
 
   if (httpResponseCode > 0) {
      Serial.print("HTTP Code: "); Serial.println(httpResponseCode);
      String response = http.getString();
-     // Serial.println("Response: " + response); // Uncomment jika ingin lihat pesan server
-
-     // Kode 200/201 atau ada kata "berhasil"
      if (httpResponseCode == 200 || httpResponseCode == 201 || response.indexOf("berhasil") >= 0) {
         Serial.println("✅ Database OK");
         success = true;
      } else {
-        Serial.println("⚠️ Terkirim tapi response aneh (Check Server)");
-        success = true; // Tetap anggap sukses agar UI tidak error
+        Serial.println("⚠️ Terkirim tapi response aneh");
+        success = true; 
      }
   } else {
      Serial.print("❌ HTTP Error: "); 
@@ -330,10 +333,8 @@ bool sendToLaravel() {
      success = false;
   }
   
-  // 7. Bersihkan Resource
   http.end();
-  clientSecure.stop(); // Paksa putus koneksi secure
-  
+  clientSecure.stop();
   return success;
 }
 
@@ -344,7 +345,6 @@ bool sendToMQTT() {
      if (!mqttClient.connected()) return false;
   }
 
-  // Siapkan Data Jenis
   char jenisLengkap[20];
   if (strcmp(sampah.jenis, "Anorganik") == 0 && strcmp(sampah.subJenis, "--") != 0) {
     if (strcmp(sampah.subJenis, "Umum") == 0) safeStringCopy(jenisLengkap, "Anorganik", sizeof(jenisLengkap));
@@ -353,11 +353,11 @@ bool sendToMQTT() {
     safeStringCopy(jenisLengkap, sampah.jenis, sizeof(jenisLengkap));
   }
 
-  // Format JSON
   String mqttData = "{";
   mqttData += "\"weight\":" + String(currentWeight, 2) + ",";
   mqttData += "\"fakultas\":\"" + String(fakultas) + "\",";
   mqttData += "\"jenis\":\"" + String(jenisLengkap) + "\"";
+  // Tidak kirim timestamp, subscriber MQTT bisa pakai waktu terima (receive time)
   mqttData += "}";
 
   Serial.println("📡 MQTT Publish: " + mqttData);
@@ -371,7 +371,7 @@ bool sendToMQTT() {
   }
 }
 
-// ==================== BUTTON & LOGIC ====================
+// ==================== LOGIC UTAMA ====================
 
 void handleKirimData() {
   if (currentState != AppState::IDLE) return;
@@ -393,11 +393,7 @@ void handleKirimData() {
     } else {
       lcd.print("Status: Mengirim... ");
       
-      // --- KIRIM KE DUA TUJUAN ---
-      // Kita prioritaskan Laravel (Database) untuk status sukses/gagal di LCD
       bool laravelSuccess = sendToLaravel();
-      
-      // Kirim ke MQTT (Background process, tidak mempengaruhi LCD secara kritis)
       sendToMQTT(); 
       
       lcd.setCursor(0, 0);
@@ -413,14 +409,7 @@ void handleKirimData() {
   }
 }
 
-// --- FUNGSI UTILITAS (Tidak banyak berubah) ---
-
-bool syncTime() {
-  configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo, 3000)) return false; // Timeout dipercepat
-  return true;
-}
+// --- FUNGSI UTILITAS ---
 
 bool checkNetworkHealth() {
     // Cek ping ke Google DNS sebagai indikator internet
@@ -434,10 +423,11 @@ void manageWifiConnection() {
       offlineMode = true; isOnline = false;
     } else {
       if (offlineMode == true) {
-        // Jika sebelumnya offline, cek apakah sudah benar-benar pulih
+        // Jika sebelumnya offline dan sekarang connect, cek ping
         if(checkNetworkHealth()) {
            offlineMode = false;
-           syncTime(); // Sync ulang waktu
+           // syncTime(); <--- SUDAH DIHAPUS, TIDAK PERLU SYNC
+           Serial.println("Reconnected! Ready to send.");
         }
       }
     }
@@ -527,9 +517,9 @@ void updateStatusIndicators() {
     if (offlineMode) { 
       lcd.setCursor(0, 3); lcd.write(ICON_IDX_NO_INTERNET); 
     } else if (mqttClient.connected()) {
-      lcd.setCursor(0, 3); lcd.print(" "); // Bersih jika MQTT connected
+      lcd.setCursor(0, 3); lcd.print(" "); 
     } else {
-      lcd.setCursor(0, 3); lcd.print(blinkerState ? "-" : " "); // Kedip jika MQTT putus tapi WiFi on
+      lcd.setCursor(0, 3); lcd.print(blinkerState ? "-" : " "); 
     }
     lastDisplayUpdateTime = millis();
   }

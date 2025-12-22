@@ -18,7 +18,7 @@ namespace Config {
   constexpr unsigned long LCD_UPDATE_INTERVAL     = 100;
   constexpr unsigned long WIFI_CHECK_INTERVAL     = 15000;
   constexpr unsigned long STATUS_MSG_DURATION     = 2000; 
-  constexpr unsigned long CALIBRATION_VALUE       = 12.00000000000001;
+  constexpr unsigned long CALIBRATION_VALUE       = 12.587805;
   constexpr float MIN_WEIGHT_THRESHOLD = 0.01f;
 
   constexpr int PIN_TOMBOL_1 = 27;
@@ -62,7 +62,7 @@ AppState currentState = AppState::IDLE;
 struct SampahType { char jenis[16]; char subJenis[16]; };
 SampahType sampah;
 
-char fakultas[8] = "FEB"; 
+char fakultas[8] = "FSM"; 
 bool isOnline = false;
 bool offlineMode = false;
 
